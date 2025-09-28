@@ -22,9 +22,6 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Ensure Git LFS is available
-        uses: actions/setup-git-lfs@v1
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -65,13 +62,13 @@ jobs:
         run: |
           set -euxo pipefail
 
-          # 산출물 존재 확인
+          # 산출물 확인
           test -f "${GITHUB_WORKSPACE}/${TAR_NAME}"
 
-          # 최신 원격 상태 반영
+          # 원격 최신 상태 가져오기
           git fetch origin
 
-          # build 브랜치 체크아웃 (없으면 orphan으로 생성)
+          # build 브랜치 체크아웃 (없으면 orphan 생성)
           if git rev-parse --verify "origin/${TARGET_BRANCH}" >/dev/null 2>&1; then
             git checkout -B "${TARGET_BRANCH}" "origin/${TARGET_BRANCH}"
           else
@@ -79,17 +76,17 @@ jobs:
             git rm -rf . >/dev/null 2>&1 || true
           fi
 
-          # .git만 남기고 모두 삭제 → 최신본만 유지 정책
+          # .git만 남기고 모두 삭제 → 최신본만 유지
           find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
 
-          # LFS 초기화 및 패턴 설정(.gitattributes는 build 브랜치에 기록)
+          # Git LFS 초기화 및 패턴 등록
           git lfs install --local
           echo "*.tar filter=lfs diff=lfs merge=lfs -text" > .gitattributes
 
-          # 빌드 산출물 복사 (Git에서 꺼내오지 말 것!)
+          # 빌드 산출물 복사
           cp "${GITHUB_WORKSPACE}/${TAR_NAME}" "./${TAR_NAME}"
 
-          # 커밋 & 강제 푸시(항상 최신본 한 개만 유지)
+          # 커밋 & 강제 푸시
           git add .gitattributes "${TAR_NAME}"
           TS="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           git commit -m "chore(build): update ${TAR_NAME} (${TS})" || echo "No changes to commit."
