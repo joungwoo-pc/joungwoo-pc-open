@@ -1,11 +1,15 @@
-name: Build and publish sandboxdocker tar
+name: Build and publish sandboxdocker tar (with LFS & single-latest policy)
 
 on:
   push:
     branches: [ main ]
+    # 필요 시 경로 제한을 원복할 수 있습니다(주석 해제):
+    # paths:
+    #   - "sandboxdocker/**"
+    #   - ".github/workflows/build-and-publish-to-build-branch.yml"
 
 permissions:
-  contents: write  # build 브랜치에 커밋/푸시
+  contents: write
 
 concurrency:
   group: publish-sandboxdocker
@@ -20,19 +24,21 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
+          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build base image from repo Dockerfile (main)
+      # 레포 루트의 Dockerfile로 베이스 이미지 빌드
+      - name: Build base image from repo Dockerfile
         run: |
           docker build -f Dockerfile -t baseimg:sandbox .
 
+      # startrun.sh를 /root로 복사하는 오버레이 이미지 빌드
       - name: Create CI overlay Dockerfile to add startrun.sh
         run: |
           cat > Dockerfile.ci <<'EOF'
           FROM baseimg:sandbox
-          # startrun.sh를 컨테이너 루트로 복사하고 실행권한 부여
           COPY startrun.sh /root/startrun.sh
           RUN chmod +x /root/startrun.sh || true
           EOF
@@ -46,42 +52,52 @@ jobs:
           docker save sandboxdocker:latest -o sandboxdocker.tar
           ls -lh sandboxdocker.tar
 
-      - name: Prepare git for committing artifact
+      # ===== 여기부터 원래 정책(브랜치 정리 + LFS + 강제 푸시) =====
+      - name: Prepare git identity
         run: |
-          git config user.name "github-actions[bot]"
+          git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Publish sandboxdocker.tar to build branch (keep only latest)
+      - name: Enable Git LFS
+        run: |
+          git lfs install --local
+          # LFS 패턴 등록(.gitattributes는 build 브랜치에서 작성)
+          echo "*.tar filter=lfs diff=lfs merge=lfs -text" > .gitattributes
+
+      - name: Publish to build branch (LFS, keep only latest tar)
         env:
           TARGET_BRANCH: build
           TAR_NAME: sandboxdocker.tar
         run: |
-          # 최신 원격 브랜치 정보 가져오기
+          set -euxo pipefail
+
+          # 원격 갱신
           git fetch origin
 
-          # build 브랜치 체크아웃(없으면 생성)
+          # build 브랜치 체크아웃 (없으면 orphan으로 생성)
           if git rev-parse --verify "origin/${TARGET_BRANCH}" >/dev/null 2>&1; then
             git checkout -B "${TARGET_BRANCH}" "origin/${TARGET_BRANCH}"
           else
             git checkout --orphan "${TARGET_BRANCH}"
-            # 초기 orphan 브랜치에는 트래킹 브랜치가 없어 파일 제거 시 경고를 피하려면 아래 처리
+            # 새 orphan의 초기 상태 정리
             git rm -rf . >/dev/null 2>&1 || true
           fi
 
-          # 기존 tar 아티팩트 정리 (최신 하나만 남기기 위해 과거 *.tar 제거)
-          find . -maxdepth 1 -name "*.tar" -type f -print -exec rm -f {} \; || true
+          # .git만 남기고 워킹트리 전부 삭제(정책: 최신본만 유지하기 위한 깨끗한 상태)
+          find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
 
-          # 새 아티팩트 이동
-          git checkout main -- sandboxdocker.tar
-          # 혹시 워킹 디렉터리에 동일 파일이 있다면 덮어쓰기
-          mv -f sandboxdocker.tar "${TAR_NAME}"
+          # .gitattributes(LFS 설정) 기록
+          echo "*.tar filter=lfs diff=lfs merge=lfs -text" > .gitattributes
 
-          # 커밋 & 푸시
-          git add -A
+          # 새 아티팩트 추가
+          cp "${GITHUB_WORKSPACE}/${TAR_NAME}" "./${TAR_NAME}"
+
+          # 커밋 & 강제 푸시 (정책상 build 브랜치는 항상 최신본만 유지)
+          git add .gitattributes "${TAR_NAME}"
           TS="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           git commit -m "chore(build): update ${TAR_NAME} (${TS})" || echo "No changes to commit."
-          git push origin "${TARGET_BRANCH}"
+          git push origin "+HEAD:${TARGET_BRANCH}" --force
 
       - name: Summary
         run: |
-          echo "✅ Published sandboxdocker.tar to 'build' branch."
+          echo "✅ 'build' 브랜치를 LFS로 초기화하고 최신 sandboxdocker.tar 1개만 유지했습니다."
