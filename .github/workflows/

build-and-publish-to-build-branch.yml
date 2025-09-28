@@ -1,0 +1,87 @@
+name: Build and publish sandboxdocker tar
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write  # build 브랜치에 커밋/푸시
+
+concurrency:
+  group: publish-sandboxdocker
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build base image from repo Dockerfile (main)
+        run: |
+          docker build -f Dockerfile -t baseimg:sandbox .
+
+      - name: Create CI overlay Dockerfile to add startrun.sh
+        run: |
+          cat > Dockerfile.ci <<'EOF'
+          FROM baseimg:sandbox
+          # startrun.sh를 컨테이너 루트로 복사하고 실행권한 부여
+          COPY startrun.sh /root/startrun.sh
+          RUN chmod +x /root/startrun.sh || true
+          EOF
+
+      - name: Build final image with startrun.sh at /root
+        run: |
+          docker build -f Dockerfile.ci -t sandboxdocker:latest .
+
+      - name: Export image to sandboxdocker.tar
+        run: |
+          docker save sandboxdocker:latest -o sandboxdocker.tar
+          ls -lh sandboxdocker.tar
+
+      - name: Prepare git for committing artifact
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Publish sandboxdocker.tar to build branch (keep only latest)
+        env:
+          TARGET_BRANCH: build
+          TAR_NAME: sandboxdocker.tar
+        run: |
+          # 최신 원격 브랜치 정보 가져오기
+          git fetch origin
+
+          # build 브랜치 체크아웃(없으면 생성)
+          if git rev-parse --verify "origin/${TARGET_BRANCH}" >/dev/null 2>&1; then
+            git checkout -B "${TARGET_BRANCH}" "origin/${TARGET_BRANCH}"
+          else
+            git checkout --orphan "${TARGET_BRANCH}"
+            # 초기 orphan 브랜치에는 트래킹 브랜치가 없어 파일 제거 시 경고를 피하려면 아래 처리
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+
+          # 기존 tar 아티팩트 정리 (최신 하나만 남기기 위해 과거 *.tar 제거)
+          find . -maxdepth 1 -name "*.tar" -type f -print -exec rm -f {} \; || true
+
+          # 새 아티팩트 이동
+          git checkout main -- sandboxdocker.tar
+          # 혹시 워킹 디렉터리에 동일 파일이 있다면 덮어쓰기
+          mv -f sandboxdocker.tar "${TAR_NAME}"
+
+          # 커밋 & 푸시
+          git add -A
+          TS="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          git commit -m "chore(build): update ${TAR_NAME} (${TS})" || echo "No changes to commit."
+          git push origin "${TARGET_BRANCH}"
+
+      - name: Summary
+        run: |
+          echo "✅ Published sandboxdocker.tar to 'build' branch."
