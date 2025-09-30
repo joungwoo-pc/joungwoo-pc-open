@@ -83,15 +83,19 @@ docker compose exec app sh
 
 # joungwoo-pc-open
 
-git fetch origin build
-git checkout build
-git lfs pull
+# 1. tar 파일 내려받기
+wget -O sandboxdocker.tar \
+  https://github.com/joungwoo-pc/joungwoo-pc-open/releases/download/build-latest/sandboxdocker.tar
 
-# tar 불러오기
+# 2. 이미지 불러오기
 docker load -i sandboxdocker.tar
 
-# compose 실행
+# 3. build 브랜치로 전환해서 compose 파일 확보
+git fetch origin build
+git checkout build
+
+# 4. 컨테이너 실행
 docker compose up -d
 
-# 컨테이너 진입 (시작위치 ~/ext_volume)
+# 5. 컨테이너 접속
 docker compose exec sandboxdocker bash
