@@ -83,5 +83,14 @@ docker compose exec app sh
 
 # joungwoo-pc-open
 
-chmod +x run_sandboxdocker.sh  
-./run_sandboxdocker.sh
+git fetch origin build
+git checkout build
+
+# tar 불러오기
+docker load -i sandboxdocker.tar
+
+# compose 실행
+docker compose up -d
+
+# 컨테이너 진입 (시작위치 ~/ext_volume)
+docker compose exec sandboxdocker bash
