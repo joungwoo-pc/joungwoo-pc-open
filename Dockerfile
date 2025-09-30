@@ -22,8 +22,7 @@ RUN apt-get update && apt-get upgrade -y && \
 # 2) 파이썬 최신화
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# 3) 파이썬 패키지 설치 (docker_requirements.txt 기반)
-#    - 고정 버전이 명시된 항목은 그대로 반영
+# 3) 파이썬 패키지 설치
 RUN pip install --no-cache-dir \
     langchain langchain-community langchain-openai langgraph \
     pydantic[dotenv] python-dotenv requests tqdm rich ipython ipykernel \
@@ -121,25 +120,49 @@ RUN pip install --no-cache-dir \
     zipp==3.23.0 \
     zstandard==0.25.0
 
-# 4) bash-completion / fzf 설정 등 (runs 섹션 반영)
+# 4) bash-completion / fzf 설정
 RUN echo "source /usr/share/bash-completion/bash_completion" >> /etc/bash.bashrc && \
     if [ -f /usr/share/doc/fzf/examples/key-bindings.bash ]; then \
       echo "source /usr/share/doc/fzf/examples/key-bindings.bash" >> /etc/bash.bashrc; \
     fi
 
-# 5) 디렉터리/작업 경로 준비 (run_sandboxdocker.sh가 기대하는 구조)
+# 5) 디렉터리/작업 경로 준비
 ENV CONTAINER_HOME=/root \
     PROJECT_DIR=/root/sandboxdocker \
     EXT_DIR=/root/ext_volume
 RUN mkdir -p "$PROJECT_DIR" "$EXT_DIR"
-WORKDIR $PROJECT_DIR
 
-# 6) 내부 LLM API 기본값(실행 시 덮어쓸 수 있음)
+# 6) 내부 LLM API 기본값(실행 시 덮어쓰기 가능)
 ENV INTERNAL_LLM_API_BASE=http://host.docker.internal:11434/v1 \
     INTERNAL_LLM_API_KEY=dev-key
 
-# 7) 포트 노출 (스크립트의 포트 매핑 반영)
+# 7) 포트 노출
 EXPOSE 37910 37911 37912 37913 37914 37915 38010 38011
 
-# 8) 기본 엔트리포인트
-CMD ["bash"]
+# 8) 레포 루트의 autorun.sh를 컨테이너 /root로 복사 (레포에 파일이 반드시 있어야 빌드 성공)
+COPY autorun.sh /root/autorun.sh
+
+# 9) 엔트리포인트 스크립트 설치: autorun 실행 후 지정된 커맨드(bash -l)로 진입
+RUN bash -lc 'cat > /usr/local/bin/docker-entrypoint.sh << "EOF"\n\
+#!/usr/bin/env bash\n\
+set -euo pipefail\n\
+# autorun 실행 (있으면)\n\
+if [ -f /root/autorun.sh ]; then\n\
+  chmod +x /root/autorun.sh || true\n\
+  /root/autorun.sh || true\n\
+fi\n\
+# 인자가 있으면 그걸 실행, 없으면 bash -l 실행\n\
+if [ \"$#\" -gt 0 ]; then\n\
+  exec \"$@\"\n\
+else\n\
+  exec bash -l\n\
+fi\n\
+EOF\n\
+chmod +x /usr/local/bin/docker-entrypoint.sh'
+
+# 10) 기본 작업 디렉토리: /root/ext_volume (터미널 진입 시 여기서 시작)
+WORKDIR ${EXT_DIR}
+
+# 11) 기본 엔트리포인트/커맨드
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["bash","-l"]
