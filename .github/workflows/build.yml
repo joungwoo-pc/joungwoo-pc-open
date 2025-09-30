@@ -1,5 +1,13 @@
 # .github/workflows/build.yml
-name: Publish Docker image tar via GitHub Release (no LFS)
+# main 브랜치 변경 시 도커 이미지를 빌드해서
+# sandboxdocker.tar 과 docker-compose.yml 을 Release (tag=build-latest)에 업로드합니다.
+# 실행은:
+#   wget https://github.com/joungwoo-pc/joungwoo-pc-open/releases/download/build-latest/sandboxdocker.tar
+#   wget https://github.com/joungwoo-pc/joungwoo-pc-open/releases/download/build-latest/docker-compose.yml
+#   docker load -i sandboxdocker.tar
+#   docker compose up -d
+
+name: Publish Docker tar and compose to Release
 
 on:
   push:
@@ -17,136 +25,49 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout (full history for branch ops)
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: true
 
-      - name: Sanity check (required files exist)
+      - name: Sanity check
         run: |
           set -euo pipefail
-          test -d sandboxdocker || { echo "sandboxdocker/ folder missing"; exit 1; }
+          test -d sandboxdocker || { echo "sandboxdocker/ not found"; exit 1; }
           test -f sandboxdocker/docker_requirements.txt || { echo "docker_requirements.txt missing"; exit 1; }
           test -f sandboxdocker/docker_runs.txt || { echo "docker_runs.txt missing"; exit 1; }
           ls -la sandboxdocker || true
 
-      - name: Generate Dockerfile automatically from docker_requirements.txt
+      - name: Generate Dockerfile
         working-directory: sandboxdocker
-        shell: bash
         run: |
           set -euo pipefail
-
-          REQ_FILE="docker_requirements.txt"
-          GEN_DIR=".gen"
-          mkdir -p "${GEN_DIR}"
-
-          extract_section() {
-            local section="$1"
-            awk -v s="$section" '
-              BEGIN{ins=0}
-              /^\s*\[/{ins = ($0 ~ "\\[" s "\\]"); next}
-              ins {
-                if ($0 !~ /^\s*#/ && $0 !~ /^\s*$/) print
-              }
-            ' "${REQ_FILE}" | sed 's/\r$//'
-          }
-
-          extract_section "apt"  | sed 's/\r$//' > "${GEN_DIR}/apt.list" || true
-          extract_section "pip"  | sed 's/\r$//' > "${GEN_DIR}/pip.requirements" || true
-          extract_section "runs" | sed 's/\r$//' > "${GEN_DIR}/build.runs" || true
-
-          RUN_STARTUP="${GEN_DIR}/run_startup.sh"
-          {
-            echo '#!/usr/bin/env bash'
-            echo 'set -euo pipefail'
-            sed 's/\r$//' docker_runs.txt
-            echo ''
-            echo 'if [[ $# -gt 0 ]]; then exec "$@"; else exec bash -l; fi'
-          } > "${RUN_STARTUP}"
-          chmod +x "${RUN_STARTUP}"
-
-          {
-            echo '#!/usr/bin/env bash'
-            echo 'set -euo pipefail'
-            cat "${GEN_DIR}/build.runs"
-          } > "${GEN_DIR}/build.runs.sh"
-          chmod +x "${GEN_DIR}/build.runs.sh"
-
           cat > Dockerfile <<'EOF'
           FROM python:3.11-slim
-
           ENV DEBIAN_FRONTEND=noninteractive \
               PIP_DISABLE_PIP_VERSION_CHECK=1 \
               PYTHONDONTWRITEBYTECODE=1 \
               PYTHONUNBUFFERED=1
-
           ARG DOCKER_HOME=/root
           ENV DOCKER_HOME=${DOCKER_HOME}
           ENV PROJECT_DIR=${DOCKER_HOME}/sandboxdocker
           ENV EXT_VOLUME_DIR=${DOCKER_HOME}/ext_volume
-
-          WORKDIR /tmp/build
-
-          COPY .gen/apt.list /tmp/apt.list
-          COPY .gen/pip.requirements /tmp/pip.requirements
-          COPY .gen/build.runs.sh /tmp/build.runs.sh
-          COPY .gen/run_startup.sh /usr/local/bin/run_startup.sh
-
-          RUN set -euo pipefail; \
-              apt-get update; \
-              if [ -s /tmp/apt.list ]; then \
-                xargs -a /tmp/apt.list apt-get install -y --no-install-recommends; \
-              fi; \
-              rm -rf /var/lib/apt/lists/*
-
-          RUN set -euo pipefail; \
-              if [ -s /tmp/pip.requirements ]; then \
-                pip3 install --no-cache-dir -r /tmp/pip.requirements; \
-              fi
-
-          RUN set -euo pipefail; \
-              if [ -s /tmp/build.runs.sh ]; then \
-                bash /tmp/build.runs.sh; \
-              fi
-
           RUN mkdir -p "${PROJECT_DIR}" "${EXT_VOLUME_DIR}"
           COPY . "${PROJECT_DIR}"
-
           VOLUME ["${EXT_VOLUME_DIR}"]
           WORKDIR ${PROJECT_DIR}
-
-          ENTRYPOINT ["/usr/local/bin/run_startup.sh"]
-          CMD []
+          CMD ["bash"]
           EOF
 
       - name: Build Docker image
-        run: |
-          docker build -t sandboxdocker:latest sandboxdocker
+        run: docker build -t sandboxdocker:latest sandboxdocker
 
       - name: Save image as tar
         run: |
           docker save sandboxdocker:latest -o sandboxdocker.tar
           ls -lh sandboxdocker.tar
 
-      - name: Create or update Release (tag=build-latest)
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: build-latest
-          name: build-latest
-          make_latest: true
-          prerelease: true
-          files: |
-            sandboxdocker.tar
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Stage compose and optional autorun.sh
+      - name: Generate docker-compose.yml
         run: |
-          STAGE_DIR="${RUNNER_TEMP}/artifacts"
-          mkdir -p "$STAGE_DIR"
-
-          cat > "${STAGE_DIR}/docker-compose.yml" <<'EOF'
+          cat > docker-compose.yml <<'EOF'
           version: "3.8"
           services:
             sandboxdocker:
@@ -160,7 +81,6 @@ jobs:
                 INTERNAL_LLM_API_KEY: "dev-key"
               volumes:
                 - ${HOME}:/root/ext_volume
-                - ./:/ext_src:ro
               ports:
                 - "37910:37910"
                 - "37911:37911"
@@ -172,40 +92,23 @@ jobs:
                 - "38011:38011"
               entrypoint: >
                 bash -lc "
-                  if [ -f /ext_src/autorun.sh ]; then
-                    cp /ext_src/autorun.sh /root/autorun.sh;
-                  fi;
-                  if [ -f /root/autorun.sh ]; then
-                    chmod +x /root/autorun.sh || true;
-                    /root/autorun.sh || true;
+                  if [ -f /root/sandboxdocker/autorun.sh ]; then
+                    chmod +x /root/sandboxdocker/autorun.sh || true;
+                    /root/sandboxdocker/autorun.sh || true;
                   fi;
                   exec sleep infinity
                 "
           EOF
 
-          if [ -f "autorun.sh" ]; then
-            cp autorun.sh "${STAGE_DIR}/autorun.sh"
-          fi
-
-      - name: Update build branch with compose only
-        run: |
-          set -euo pipefail
-          STAGE_DIR="${RUNNER_TEMP}/artifacts"
-
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git fetch origin
-          git checkout -B build origin/build || git checkout -B build
-
-          git rm -rf . >/dev/null 2>&1 || true
-          find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
-
-          cp -f "${STAGE_DIR}/docker-compose.yml" .
-          if [ -f "${STAGE_DIR}/autorun.sh" ]; then
-            cp -f "${STAGE_DIR}/autorun.sh" .
-          fi
-
-          git add -A
-          git commit -m "Update compose for ${GITHUB_SHA}" || echo "No changes to commit"
-          git push origin build --force
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-latest
+          name: build-latest
+          make_latest: true
+          prerelease: true
+          files: |
+            sandboxdocker.tar
+            docker-compose.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
