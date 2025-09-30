@@ -24,3 +24,17 @@ docker compose up -d
 
 # 4) 컨테이너 접속 (시작 위치: /root/ext_volume)
 docker compose exec sandboxdocker bash
+
+```
+
+
+
+```powershell
+
+Invoke-WebRequest -Uri "https://github.com/joungwoo-pc/joungwoo-pc-open/releases/download/build-latest/sandboxdocker.tar" -OutFile "sandboxdocker.tar"
+Invoke-WebRequest -Uri "https://github.com/joungwoo-pc/joungwoo-pc-open/releases/download/build-latest/docker-compose.yml" -OutFile "docker-compose.yml"
+docker load -i .\sandboxdocker.tar
+docker compose up -d
+docker compose exec sandboxdocker bash
+
+```
