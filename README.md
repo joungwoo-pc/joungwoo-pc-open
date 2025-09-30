@@ -40,7 +40,7 @@ docker compose exec sandboxdocker bash
 
 ---
 
-What this compose does
+# What this compose does
 
 Ports
 
@@ -84,11 +84,14 @@ Update to latest
 
 새 빌드가 올라오면 아래만 다시 실행하면 됩니다.
 
+
+```bash
 wget -O sandboxdocker.tar https://github.com/joungwoo-pc/joungwoo-pc-open/releases/download/build-latest/sandboxdocker.tar
 docker load -i sandboxdocker.tar
 docker compose pull || true   # 태그가 latest면 생략 가능
 docker compose up -d
 
+```
 
 ---
 
