@@ -1,114 +1,34 @@
-name: Build & Run with Docker Compose (self-hosted)
+name: Build Docker and Push tar to build branch
 
 on:
   push:
     branches: ["main"]
 
 jobs:
-  build_and_run:
+  build-and-push-tar:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout main
         uses: actions/checkout@v4
 
-      - name: Derive variables
-        id: vars
-        shell: bash
+      - name: Build Docker image
         run: |
-          REPO="${{ github.repository }}"
-          NAME="$(basename "$REPO")"
-          SHA="${{ github.sha }}"
-          IMAGE_TAG="${NAME}:${SHA}"
-          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
-          echo "repo_abs=$(pwd)" >> $GITHUB_OUTPUT
+          IMAGE_NAME=myapp:${{ github.sha }}
+          docker build -t $IMAGE_NAME .
 
-      - name: Build image from root Dockerfile
+      - name: Save Docker image to tar
         run: |
-          docker build -t "${{ steps.vars.outputs.image_tag }}" .
+          IMAGE_NAME=myapp:${{ github.sha }}
+          docker save $IMAGE_NAME -o sandboxdocker.tar
 
-      - name: Extract EXPOSE ports from Dockerfile
-        id: ports
-        shell: bash
+      - name: Push tar to build branch
         run: |
-          if ! grep -qE '^\s*EXPOSE\b' Dockerfile; then
-            echo "No EXPOSE lines found in Dockerfile." >&2
-            exit 1
-          fi
-          # Collect all numeric ports from EXPOSE lines, flatten, unique, keep order
-          mapfile -t PORTS < <(awk '/^\s*EXPOSE\b/{
-              for (i=2;i<=NF;i++) {
-                gsub("/tcp","",$i);
-                gsub("/udp","",$i);
-                if ($i ~ /^[0-9]+$/) print $i;
-              }
-            }' Dockerfile | awk '!seen[$0]++')
-
-          if [ "${#PORTS[@]}" -eq 0 ]; then
-            echo "No numeric ports parsed from EXPOSE." >&2
-            exit 1
-          fi
-
-          # Save space-separated ports for later steps
-          echo "ports=${PORTS[*]}" >> $GITHUB_OUTPUT
-
-      - name: Generate .env for docker compose
-        shell: bash
-        run: |
-          cat > .env <<EOF
-          IMAGE=${{ steps.vars.outputs.image_tag }}
-          HOME=${HOME}
-          REPO_ABS=${{ steps.vars.outputs.repo_abs }}
-          EOF
-          echo "Wrote .env:"
-          cat .env
-
-      - name: Generate docker-compose.yml dynamically
-        shell: bash
-        run: |
-          cat > docker-compose.yml <<'YAML'
-          services:
-            app:
-              image: ${IMAGE}
-              restart: always
-              tty: true
-              working_dir: /root/ext_volume
-              volumes:
-                # Mount host home to container ~/ext_volume
-                - "${HOME}:/root/ext_volume"
-                # Mount repo root read-only so we can copy autorun.sh
-                - "${REPO_ABS}:/ext_src:ro"
-              entrypoint: >
-                /bin/sh -lc
-                '
-                set -e
-                # Copy autorun.sh into container home, chmod, then exec it
-                if [ -f /ext_src/autorun.sh ]; then
-                  cp /ext_src/autorun.sh /root/autorun.sh
-                  chmod +x /root/autorun.sh
-                else
-                  echo "autorun.sh not found in repo root" >&2
-                fi
-                exec /root/autorun.sh
-                '
-              ports:
-          YAML
-
-          # Append the ports mapping lines
-          for p in ${{ steps.ports.outputs.ports }}; do
-            echo "                - "${p}:${p}"" >> docker-compose.yml
-          done
-
-          echo "Generated docker-compose.yml:"
-          cat docker-compose.yml
-
-      - name: Bring up with Docker Compose
-        shell: bash
-        run: |
-          docker compose up -d
-          docker compose ps
-
-      - name: Show how to exec into container (info)
-        shell: bash
-        run: |
-          echo "To open a shell in the container (starting in /root/ext_volume because of working_dir):"
-          echo "  docker compose exec app sh"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin
+          git checkout -B build
+          mv sandboxdocker.tar .
+          git add sandboxdocker.tar
+          git commit -m "Update Docker tar for ${{ github.sha }}" || echo "No changes to commit"
+          git push origin build --force
