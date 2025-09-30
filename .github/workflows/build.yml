@@ -1,4 +1,6 @@
-name: Publish Docker image tar to build branch (with Git LFS)
+# .github/workflows/build.yml
+# → Git LFS 대신 GitHub Releases(Assets)로 sandboxdocker.tar 업로드하도록 수정
+name: Publish Docker image tar to GitHub Release
 
 on:
   push:
@@ -9,18 +11,17 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # build 브랜치 푸시 권한
+  contents: write   # Release 생성/업로드에 필요
 
 jobs:
   publish:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout (full history for branch ops)
+      - name: Checkout (full history not required now)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: true
 
       - name: Sanity check (required files exist)
         run: |
@@ -132,44 +133,18 @@ jobs:
           docker save sandboxdocker:latest -o sandboxdocker.tar
           ls -lh sandboxdocker.tar
 
-      - name: Enable Git LFS
-        run: |
-          sudo apt-get update && sudo apt-get install -y git-lfs
-          git lfs install
-          git lfs track "*.tar"
-          git add .gitattributes
-          git commit -m "chore: enable LFS for tar" || true
+      # ⬇️ Git LFS 관련 단계 전부 제거
+      # ⬇️ 브랜치로 tar 푸시하지 않음
 
-      - name: Publish image tar to build branch
+      - name: Upload tar to GitHub Release (tag=build-latest)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-latest
+          name: build-latest
+          body: "Auto-published from commit ${{ github.sha }}"
+          make_latest: true
+          prerelease: true
+          files: |
+            sandboxdocker.tar
         env:
-          TARGET_BRANCH: build
-          GITHUB_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-
-          git fetch --prune origin
-          BUILD_DIR="$(mktemp -d /tmp/build-worktree-XXXX)"
-
-          if git ls-remote --heads origin "${TARGET_BRANCH}" | grep -q "${TARGET_BRANCH}"; then
-            git worktree add -f "${BUILD_DIR}" "origin/${TARGET_BRANCH}"
-            cd "${BUILD_DIR}"
-            git switch -c "${TARGET_BRANCH}" || git switch "${TARGET_BRANCH}" || true
-          else
-            git worktree add -B "${TARGET_BRANCH}" "${BUILD_DIR}"
-            cd "${BUILD_DIR}"
-            git checkout --orphan "${TARGET_BRANCH}"
-          fi
-
-          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
-
-          cp $GITHUB_WORKSPACE/sandboxdocker.tar ./sandboxdocker.tar
-
-          git add -A
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -m "publish Docker image tar (LFS) from ${GITHUB_SHA}" || echo "Nothing to commit"
-          git push origin HEAD:"${TARGET_BRANCH}" --force
-
-      - name: Show pushed commit
-        run: |
-          git ls-remote origin build | awk '{print "build branch tip: " $1}'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
