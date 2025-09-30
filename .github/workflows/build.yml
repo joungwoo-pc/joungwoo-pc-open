@@ -1,141 +1,175 @@
-# .github/workflows/build.yml
-# NOTE: GitHub은 100MB 초과 파일을 브랜치로 푸시할 수 없습니다.
-# -> 도커 tar는 GitHub Release(tag: build-latest) 자산으로 업로드합니다.
-# -> build 브랜치에는 docker-compose.yml(+ autorun.sh 있으면 포함)만 남겨 항상 최신 상태로 유지합니다.
-
-name: Build Docker, publish image & compose (build branch) + upload tar to Release
+name: Publish Docker image tar to build branch (with Git LFS)
 
 on:
   push:
-    branches: ["main"]
+    branches: [ main ]
+    paths:
+      - "sandboxdocker/**"
+      - ".github/workflows/build.yml"
+  workflow_dispatch:
 
 permissions:
-  contents: write        # build 브랜치 업데이트
-  packages: write        # GHCR 푸시
-  id-token: write
+  contents: write  # build 브랜치 푸시 권한
 
 jobs:
-  build-and-publish:
+  publish:
     runs-on: ubuntu-latest
 
-    env:
-      IMAGE_BASENAME: sandboxdocker
-      REGISTRY: ghcr.io
-      OWNER: ${{ github.repository_owner }}
-      REPO: ${{ github.event.repository.name }}
-
     steps:
-      - name: Checkout main
+      - name: Checkout (full history for branch ops)
         uses: actions/checkout@v4
-
-      - name: Set image tags
-        id: tags
-        run: |
-          OWNER_L=$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]')
-          REPO_L=$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')
-          IMAGE_REF="${REGISTRY}/${OWNER_L}/${REPO_L}:${GITHUB_SHA}"
-          echo "image_ref=${IMAGE_REF}" >> $GITHUB_OUTPUT
-
-      # Build
-      - name: Build Docker image
-        run: |
-          docker build -t "${{ steps.tags.outputs.image_ref }}" .
-
-      # Push to GHCR (pull 기반 배포용)
-      - name: Login to GHCR
-        uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: true
 
-      - name: Push image to GHCR
-        run: |
-          docker push "${{ steps.tags.outputs.image_ref }}"
-
-      # Save tar (100MB 초과 → 브랜치 푸시 불가, Release 자산으로 업로드)
-      - name: Save image to tar (stage)
-        run: |
-          STAGE_DIR="${RUNNER_TEMP}/artifacts"
-          mkdir -p "$STAGE_DIR"
-          docker save "${{ steps.tags.outputs.image_ref }}" -o "${STAGE_DIR}/sandboxdocker.tar"
-          if [ -f "autorun.sh" ]; then
-            cp autorun.sh "${STAGE_DIR}/autorun.sh"
-          fi
-
-      # Compose 파일 생성 (요구된 실행옵션 모두 포함)
-      - name: Generate docker-compose.yml (stage)
-        run: |
-          STAGE_DIR="${RUNNER_TEMP}/artifacts"
-          cat > "${STAGE_DIR}/docker-compose.yml" <<EOF
-          version: "3.8"
-          services:
-            sandboxdocker:
-              image: ${{ steps.tags.outputs.image_ref }}
-              container_name: sandboxdocker
-              restart: always
-              tty: true
-              working_dir: /root/ext_volume
-              environment:
-                INTERNAL_LLM_API_BASE: "http://host.docker.internal:11434/v1"
-                INTERNAL_LLM_API_KEY: "dev-key"
-              volumes:
-                - \${HOME}:/root/ext_volume
-                - ./:/ext_src:ro
-              ports:
-                - "37910:37910"
-                - "37911:37911"
-                - "37912:37912"
-                - "37913:37913"
-                - "37914:37914"
-                - "37915:37915"
-                - "38010:38010"
-                - "38011:38011"
-              entrypoint: >
-                bash -lc "
-                  if [ -f /ext_src/autorun.sh ]; then
-                    cp /ext_src/autorun.sh /root/autorun.sh;
-                  fi;
-                  if [ -f /root/autorun.sh ]; then
-                    chmod +x /root/autorun.sh || true;
-                    /root/autorun.sh || true;
-                  fi;
-                  exec sleep infinity
-                "
-          EOF
-
-      # build 브랜치에는 compose(+autorun.sh)만 남김 (항상 최신 1버전 유지)
-      - name: Publish compose (and autorun.sh) to build branch
+      - name: Sanity check (required files exist)
         run: |
           set -euo pipefail
-          STAGE_DIR="${RUNNER_TEMP}/artifacts"
+          test -d sandboxdocker || { echo "sandboxdocker/ 폴더가 없습니다."; exit 1; }
+          test -f sandboxdocker/docker_requirements.txt || { echo "docker_requirements.txt 없음"; exit 1; }
+          test -f sandboxdocker/docker_runs.txt || { echo "docker_runs.txt 없음"; exit 1; }
+          ls -la sandboxdocker || true
 
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Generate Dockerfile automatically from docker_requirements.txt
+        working-directory: sandboxdocker
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          git fetch origin
-          git checkout -B build origin/build || git checkout -B build
+          REQ_FILE="docker_requirements.txt"
+          GEN_DIR=".gen"
+          mkdir -p "${GEN_DIR}"
 
-          # clean working tree
-          git rm -rf . >/dev/null 2>&1 || true
-          find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
+          extract_section() {
+            local section="$1"
+            awk -v s="$section" '
+              BEGIN{ins=0}
+              /^\s*\[/{ins = ($0 ~ "\\[" s "\\]"); next}
+              ins {
+                if ($0 !~ /^\s*#/ && $0 !~ /^\s*$/) print
+              }
+            ' "${REQ_FILE}" | sed 's/\r$//'
+          }
 
-          cp -f "${STAGE_DIR}/docker-compose.yml" .
-          [ -f "${STAGE_DIR}/autorun.sh" ] && cp -f "${STAGE_DIR}/autorun.sh" .
+          # 1) 섹션 파싱
+          extract_section "apt"  | sed 's/\r$//' > "${GEN_DIR}/apt.list" || true
+          extract_section "pip"  | sed 's/\r$//' > "${GEN_DIR}/pip.requirements" || true
+          extract_section "runs" | sed 's/\r$//' > "${GEN_DIR}/build.runs" || true
+
+          # 2) 컨테이너 런타임용 run 스크립트
+          RUN_STARTUP="${GEN_DIR}/run_startup.sh"
+          {
+            echo '#!/usr/bin/env bash'
+            echo 'set -euo pipefail'
+            sed 's/\r$//' docker_runs.txt
+            echo ''
+            echo 'if [[ $# -gt 0 ]]; then exec "$@"; else exec bash -l; fi'
+          } > "${RUN_STARTUP}"
+          chmod +x "${RUN_STARTUP}"
+
+          # 3) [runs] 섹션 → 빌드 타임 스크립트
+          {
+            echo '#!/usr/bin/env bash'
+            echo 'set -euo pipefail'
+            cat "${GEN_DIR}/build.runs"
+          } > "${GEN_DIR}/build.runs.sh"
+          chmod +x "${GEN_DIR}/build.runs.sh"
+
+          # 4) Dockerfile 자동 생성
+          cat > Dockerfile <<'EOF'
+          FROM python:3.11-slim
+
+          ENV DEBIAN_FRONTEND=noninteractive \
+              PIP_DISABLE_PIP_VERSION_CHECK=1 \
+              PYTHONDONTWRITEBYTECODE=1 \
+              PYTHONUNBUFFERED=1
+
+          ARG DOCKER_HOME=/root
+          ENV DOCKER_HOME=${DOCKER_HOME}
+          ENV PROJECT_DIR=${DOCKER_HOME}/sandboxdocker
+          ENV EXT_VOLUME_DIR=${DOCKER_HOME}/ext_volume
+
+          WORKDIR /tmp/build
+
+          COPY .gen/apt.list /tmp/apt.list
+          COPY .gen/pip.requirements /tmp/pip.requirements
+          COPY .gen/build.runs.sh /tmp/build.runs.sh
+          COPY .gen/run_startup.sh /usr/local/bin/run_startup.sh
+
+          RUN set -euo pipefail; \
+              apt-get update; \
+              if [ -s /tmp/apt.list ]; then \
+                xargs -a /tmp/apt.list apt-get install -y --no-install-recommends; \
+              fi; \
+              rm -rf /var/lib/apt/lists/*
+
+          RUN set -euo pipefail; \
+              if [ -s /tmp/pip.requirements ]; then \
+                pip3 install --no-cache-dir -r /tmp/pip.requirements; \
+              fi
+
+          RUN set -euo pipefail; \
+              if [ -s /tmp/build.runs.sh ]; then \
+                bash /tmp/build.runs.sh; \
+              fi
+
+          RUN mkdir -p "${PROJECT_DIR}" "${EXT_VOLUME_DIR}"
+          COPY . "${PROJECT_DIR}"
+
+          VOLUME ["${EXT_VOLUME_DIR}"]
+          WORKDIR ${PROJECT_DIR}
+
+          ENTRYPOINT ["/usr/local/bin/run_startup.sh"]
+          CMD []
+          EOF
+
+      - name: Build Docker image
+        run: |
+          docker build -t sandboxdocker:latest sandboxdocker
+
+      - name: Save image as tar
+        run: |
+          docker save sandboxdocker:latest -o sandboxdocker.tar
+          ls -lh sandboxdocker.tar
+
+      - name: Enable Git LFS
+        run: |
+          sudo apt-get update && sudo apt-get install -y git-lfs
+          git lfs install
+          git lfs track "*.tar"
+          git add .gitattributes
+          git commit -m "chore: enable LFS for tar" || true
+
+      - name: Publish image tar to build branch
+        env:
+          TARGET_BRANCH: build
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          git fetch --prune origin
+          BUILD_DIR="$(mktemp -d /tmp/build-worktree-XXXX)"
+
+          if git ls-remote --heads origin "${TARGET_BRANCH}" | grep -q "${TARGET_BRANCH}"; then
+            git worktree add -f "${BUILD_DIR}" "origin/${TARGET_BRANCH}"
+            cd "${BUILD_DIR}"
+            git switch -c "${TARGET_BRANCH}" || git switch "${TARGET_BRANCH}" || true
+          else
+            git worktree add -B "${TARGET_BRANCH}" "${BUILD_DIR}"
+            cd "${BUILD_DIR}"
+            git checkout --orphan "${TARGET_BRANCH}"
+          fi
+
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+
+          cp $GITHUB_WORKSPACE/sandboxdocker.tar ./sandboxdocker.tar
 
           git add -A
-          git commit -m "Update compose for ${{ github.sha }}" || echo "No changes to commit"
-          git push origin build --force
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "publish Docker image tar (LFS) from ${GITHUB_SHA}" || echo "Nothing to commit"
+          git push origin HEAD:"${TARGET_BRANCH}" --force
 
-      # Release(tag: build-latest)에 tar 업로드 (브랜치 용량 제한 회피)
-      - name: Upload tar to Release (tag=build-latest)
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: build-latest
-          name: build-latest
-          make_latest: true
-          prerelease: true
-          files: |
-            ${{ runner.temp }}/artifacts/sandboxdocker.tar
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Show pushed commit
+        run: |
+          git ls-remote origin build | awk '{print "build branch tip: " $1}'
