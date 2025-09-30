@@ -85,6 +85,7 @@ docker compose exec app sh
 
 git fetch origin build
 git checkout build
+git lfs pull
 
 # tar 불러오기
 docker load -i sandboxdocker.tar
