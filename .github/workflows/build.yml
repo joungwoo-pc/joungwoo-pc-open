@@ -1,34 +1,74 @@
-name: Build Docker and Push tar to build branch
+name: Build Docker and Push tar + compose
 
 on:
   push:
     branches: ["main"]
 
 jobs:
-  build-and-push-tar:
+  build-and-push:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
 
+      # 1. Docker build
       - name: Build Docker image
         run: |
-          IMAGE_NAME=myapp:${{ github.sha }}
+          IMAGE_NAME=sandboxdocker:${{ github.sha }}
           docker build -t $IMAGE_NAME .
 
-      - name: Save Docker image to tar
+      # 2. Save to tar
+      - name: Save image to tar
         run: |
-          IMAGE_NAME=myapp:${{ github.sha }}
+          IMAGE_NAME=sandboxdocker:${{ github.sha }}
           docker save $IMAGE_NAME -o sandboxdocker.tar
 
-      - name: Push tar to build branch
+      # 3. Generate docker-compose.yml with 모든 설정 포함
+      - name: Generate docker-compose.yml
+        run: |
+          cat > docker-compose.yml <<'EOF'
+          version: "3.8"
+          services:
+            sandboxdocker:
+              image: sandboxdocker:${GITHUB_SHA}
+              container_name: sandboxdocker
+              restart: always
+              working_dir: /root/ext_volume
+              tty: true
+              environment:
+                INTERNAL_LLM_API_BASE: "http://host.docker.internal:11434/v1"
+                INTERNAL_LLM_API_KEY: "dev-key"
+              volumes:
+                - ${HOME}:/root/ext_volume
+              ports:
+                - "37910:37910"
+                - "37911:37911"
+                - "37912:37912"
+                - "37913:37913"
+                - "37914:37914"
+                - "37915:37915"
+                - "38010:38010"
+                - "38011:38011"
+              entrypoint: >
+                bash -lc "
+                  if [ -f /root/autorun.sh ]; then
+                    chmod +x /root/autorun.sh || true;
+                    /root/autorun.sh || true;
+                  fi;
+                  exec sleep infinity
+                "
+          EOF
+
+      # 4. Push tar + compose to build branch
+      - name: Push artifacts to build branch
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin
           git checkout -B build
           mv sandboxdocker.tar .
-          git add sandboxdocker.tar
-          git commit -m "Update Docker tar for ${{ github.sha }}" || echo "No changes to commit"
+          mv docker-compose.yml .
+          git add sandboxdocker.tar docker-compose.yml
+          git commit -m "Update build artifacts for ${{ github.sha }}" || echo "No changes to commit"
           git push origin build --force
