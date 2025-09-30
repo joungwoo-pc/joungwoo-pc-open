@@ -1,34 +1,34 @@
 # .github/workflows/build.yml
-# → Git LFS 대신 GitHub Releases(Assets)로 sandboxdocker.tar 업로드하도록 수정
-name: Publish Docker image tar to GitHub Release
+name: Publish Docker image tar via GitHub Release (no LFS)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
     paths:
       - "sandboxdocker/**"
       - ".github/workflows/build.yml"
   workflow_dispatch:
 
 permissions:
-  contents: write   # Release 생성/업로드에 필요
+  contents: write
 
 jobs:
   publish:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout (full history not required now)
+      - name: Checkout (full history for branch ops)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: true
 
       - name: Sanity check (required files exist)
         run: |
           set -euo pipefail
-          test -d sandboxdocker || { echo "sandboxdocker/ 폴더가 없습니다."; exit 1; }
-          test -f sandboxdocker/docker_requirements.txt || { echo "docker_requirements.txt 없음"; exit 1; }
-          test -f sandboxdocker/docker_runs.txt || { echo "docker_runs.txt 없음"; exit 1; }
+          test -d sandboxdocker || { echo "sandboxdocker/ folder missing"; exit 1; }
+          test -f sandboxdocker/docker_requirements.txt || { echo "docker_requirements.txt missing"; exit 1; }
+          test -f sandboxdocker/docker_runs.txt || { echo "docker_runs.txt missing"; exit 1; }
           ls -la sandboxdocker || true
 
       - name: Generate Dockerfile automatically from docker_requirements.txt
@@ -52,12 +52,10 @@ jobs:
             ' "${REQ_FILE}" | sed 's/\r$//'
           }
 
-          # 1) 섹션 파싱
           extract_section "apt"  | sed 's/\r$//' > "${GEN_DIR}/apt.list" || true
           extract_section "pip"  | sed 's/\r$//' > "${GEN_DIR}/pip.requirements" || true
           extract_section "runs" | sed 's/\r$//' > "${GEN_DIR}/build.runs" || true
 
-          # 2) 컨테이너 런타임용 run 스크립트
           RUN_STARTUP="${GEN_DIR}/run_startup.sh"
           {
             echo '#!/usr/bin/env bash'
@@ -68,7 +66,6 @@ jobs:
           } > "${RUN_STARTUP}"
           chmod +x "${RUN_STARTUP}"
 
-          # 3) [runs] 섹션 → 빌드 타임 스크립트
           {
             echo '#!/usr/bin/env bash'
             echo 'set -euo pipefail'
@@ -76,7 +73,6 @@ jobs:
           } > "${GEN_DIR}/build.runs.sh"
           chmod +x "${GEN_DIR}/build.runs.sh"
 
-          # 4) Dockerfile 자동 생성
           cat > Dockerfile <<'EOF'
           FROM python:3.11-slim
 
@@ -133,18 +129,83 @@ jobs:
           docker save sandboxdocker:latest -o sandboxdocker.tar
           ls -lh sandboxdocker.tar
 
-      # ⬇️ Git LFS 관련 단계 전부 제거
-      # ⬇️ 브랜치로 tar 푸시하지 않음
-
-      - name: Upload tar to GitHub Release (tag=build-latest)
+      - name: Create or update Release (tag=build-latest)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-latest
           name: build-latest
-          body: "Auto-published from commit ${{ github.sha }}"
           make_latest: true
           prerelease: true
           files: |
             sandboxdocker.tar
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Stage compose and optional autorun.sh
+        run: |
+          STAGE_DIR="${RUNNER_TEMP}/artifacts"
+          mkdir -p "$STAGE_DIR"
+
+          cat > "${STAGE_DIR}/docker-compose.yml" <<'EOF'
+          version: "3.8"
+          services:
+            sandboxdocker:
+              image: sandboxdocker:latest
+              container_name: sandboxdocker
+              restart: always
+              tty: true
+              working_dir: /root/ext_volume
+              environment:
+                INTERNAL_LLM_API_BASE: "http://host.docker.internal:11434/v1"
+                INTERNAL_LLM_API_KEY: "dev-key"
+              volumes:
+                - ${HOME}:/root/ext_volume
+                - ./:/ext_src:ro
+              ports:
+                - "37910:37910"
+                - "37911:37911"
+                - "37912:37912"
+                - "37913:37913"
+                - "37914:37914"
+                - "37915:37915"
+                - "38010:38010"
+                - "38011:38011"
+              entrypoint: >
+                bash -lc "
+                  if [ -f /ext_src/autorun.sh ]; then
+                    cp /ext_src/autorun.sh /root/autorun.sh;
+                  fi;
+                  if [ -f /root/autorun.sh ]; then
+                    chmod +x /root/autorun.sh || true;
+                    /root/autorun.sh || true;
+                  fi;
+                  exec sleep infinity
+                "
+          EOF
+
+          if [ -f "autorun.sh" ]; then
+            cp autorun.sh "${STAGE_DIR}/autorun.sh"
+          fi
+
+      - name: Update build branch with compose only
+        run: |
+          set -euo pipefail
+          STAGE_DIR="${RUNNER_TEMP}/artifacts"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin
+          git checkout -B build origin/build || git checkout -B build
+
+          git rm -rf . >/dev/null 2>&1 || true
+          find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
+
+          cp -f "${STAGE_DIR}/docker-compose.yml" .
+          if [ -f "${STAGE_DIR}/autorun.sh" ]; then
+            cp -f "${STAGE_DIR}/autorun.sh" .
+          fi
+
+          git add -A
+          git commit -m "Update compose for ${GITHUB_SHA}" || echo "No changes to commit"
+          git push origin build --force
