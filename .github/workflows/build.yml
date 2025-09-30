@@ -1,104 +1,114 @@
-name: Build and publish sandboxdocker tar (LFS + single-latest)
+name: Build & Run with Docker Compose (self-hosted)
 
 on:
   push:
-    branches: [ main ]
-
-permissions:
-  contents: write
-
-concurrency:
-  group: publish-sandboxdocker
-  cancel-in-progress: false
+    branches: ["main"]
 
 jobs:
-  build-and-publish:
-    runs-on: ubuntu-latest
-
+  build_and_run:
+    runs-on: self-hosted
     steps:
-      - name: Checkout main
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # 레포 루트의 Dockerfile로 베이스 이미지 빌드
-      - name: Build base image from repo Dockerfile
+      - name: Derive variables
+        id: vars
+        shell: bash
         run: |
-          docker build -f Dockerfile -t baseimg:sandbox .
+          REPO="${{ github.repository }}"
+          NAME="$(basename "$REPO")"
+          SHA="${{ github.sha }}"
+          IMAGE_TAG="${NAME}:${SHA}"
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "repo_abs=$(pwd)" >> $GITHUB_OUTPUT
 
-      # startrun.sh를 /root로 복사하는 오버레이 이미지 빌드
-      - name: Create CI overlay Dockerfile to add startrun.sh
+      - name: Build image from root Dockerfile
         run: |
-          cat > Dockerfile.ci <<'EOF'
-          FROM baseimg:sandbox
-          COPY startrun.sh /root/startrun.sh
-          RUN chmod +x /root/startrun.sh || true
-          EOF
+          docker build -t "${{ steps.vars.outputs.image_tag }}" .
 
-      - name: Build final image with startrun.sh at /root
+      - name: Extract EXPOSE ports from Dockerfile
+        id: ports
+        shell: bash
         run: |
-          docker build -f Dockerfile.ci -t sandboxdocker:latest .
+          if ! grep -qE '^\s*EXPOSE\b' Dockerfile; then
+            echo "No EXPOSE lines found in Dockerfile." >&2
+            exit 1
+          fi
+          # Collect all numeric ports from EXPOSE lines, flatten, unique, keep order
+          mapfile -t PORTS < <(awk '/^\s*EXPOSE\b/{
+              for (i=2;i<=NF;i++) {
+                gsub("/tcp","",$i);
+                gsub("/udp","",$i);
+                if ($i ~ /^[0-9]+$/) print $i;
+              }
+            }' Dockerfile | awk '!seen[$0]++')
 
-      - name: Export image to sandboxdocker.tar
-        run: |
-          docker save sandboxdocker:latest -o sandboxdocker.tar
-          ls -lh sandboxdocker.tar
-          test -f sandboxdocker.tar
-
-      # ===== 원본과 동일한 보관정책/브랜치처리/LFS + 아티팩트 임시보관 추가 =====
-      - name: Set git identity
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Publish to build branch (LFS, keep only latest tar)
-        env:
-          TARGET_BRANCH: build
-          TAR_NAME: sandboxdocker.tar
-        run: |
-          set -euxo pipefail
-
-          # 산출물 확인
-          ARTIFACT_SRC="${GITHUB_WORKSPACE}/${TAR_NAME}"
-          test -f "${ARTIFACT_SRC}"
-
-          # ▶ 아티팩트를 안전한 임시 위치로 이동 (워킹트리 정리 전에 보관)
-          ARTIFACT_TMP="${RUNNER_TEMP}/${TAR_NAME}"
-          mv "${ARTIFACT_SRC}" "${ARTIFACT_TMP}"
-          test -f "${ARTIFACT_TMP}"
-
-          # 원격 최신 상태 반영
-          git fetch origin
-
-          # build 브랜치 체크아웃 (없으면 orphan 생성)
-          if git rev-parse --verify "origin/${TARGET_BRANCH}" >/dev/null 2>&1; then
-            git checkout -B "${TARGET_BRANCH}" "origin/${TARGET_BRANCH}"
-          else
-            git checkout --orphan "${TARGET_BRANCH}"
-            git rm -rf . >/dev/null 2>&1 || true
+          if [ "${#PORTS[@]}" -eq 0 ]; then
+            echo "No numeric ports parsed from EXPOSE." >&2
+            exit 1
           fi
 
-          # .git만 남기고 모두 삭제 → 최신본만 유지
-          find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
+          # Save space-separated ports for later steps
+          echo "ports=${PORTS[*]}" >> $GITHUB_OUTPUT
 
-          # Git LFS 초기화 및 패턴 등록
-          git lfs install --local
-          echo "*.tar filter=lfs diff=lfs merge=lfs -text" > .gitattributes
-
-          # ▶ 임시 위치에서 아티팩트 복원
-          cp "${ARTIFACT_TMP}" "./${TAR_NAME}"
-          test -f "./${TAR_NAME}"
-
-          # 커밋 & 강제 푸시 (항상 최신본 한 개만 유지)
-          git add .gitattributes "${TAR_NAME}"
-          TS="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          git commit -m "chore(build): update ${TAR_NAME} (${TS})" || echo "No changes to commit."
-          git push origin "+HEAD:${TARGET_BRANCH}" --force
-
-      - name: Summary
+      - name: Generate .env for docker compose
+        shell: bash
         run: |
-          echo "✅ Published latest sandboxdocker.tar to 'build' branch with Git LFS (single-latest policy)."
+          cat > .env <<EOF
+          IMAGE=${{ steps.vars.outputs.image_tag }}
+          HOME=${HOME}
+          REPO_ABS=${{ steps.vars.outputs.repo_abs }}
+          EOF
+          echo "Wrote .env:"
+          cat .env
+
+      - name: Generate docker-compose.yml dynamically
+        shell: bash
+        run: |
+          cat > docker-compose.yml <<'YAML'
+          services:
+            app:
+              image: ${IMAGE}
+              restart: always
+              tty: true
+              working_dir: /root/ext_volume
+              volumes:
+                # Mount host home to container ~/ext_volume
+                - "${HOME}:/root/ext_volume"
+                # Mount repo root read-only so we can copy autorun.sh
+                - "${REPO_ABS}:/ext_src:ro"
+              entrypoint: >
+                /bin/sh -lc
+                '
+                set -e
+                # Copy autorun.sh into container home, chmod, then exec it
+                if [ -f /ext_src/autorun.sh ]; then
+                  cp /ext_src/autorun.sh /root/autorun.sh
+                  chmod +x /root/autorun.sh
+                else
+                  echo "autorun.sh not found in repo root" >&2
+                fi
+                exec /root/autorun.sh
+                '
+              ports:
+          YAML
+
+          # Append the ports mapping lines
+          for p in ${{ steps.ports.outputs.ports }}; do
+            echo "                - "${p}:${p}"" >> docker-compose.yml
+          done
+
+          echo "Generated docker-compose.yml:"
+          cat docker-compose.yml
+
+      - name: Bring up with Docker Compose
+        shell: bash
+        run: |
+          docker compose up -d
+          docker compose ps
+
+      - name: Show how to exec into container (info)
+        shell: bash
+        run: |
+          echo "To open a shell in the container (starting in /root/ext_volume because of working_dir):"
+          echo "  docker compose exec app sh"
