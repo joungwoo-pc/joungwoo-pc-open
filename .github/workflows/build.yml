@@ -1,46 +1,58 @@
-name: Build Docker and Push tar + compose
+name: Build Docker, publish tar & compose to build branch
 
 on:
   push:
     branches: ["main"]
 
 jobs:
-  build-and-push:
+  build-and-publish:
     runs-on: ubuntu-latest
+
+    env:
+      IMAGE_BASENAME: sandboxdocker
 
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
 
-      # 1. Docker build
+      # 1) Docker build
       - name: Build Docker image
         run: |
-          IMAGE_NAME=sandboxdocker:${{ github.sha }}
-          docker build -t $IMAGE_NAME .
+          IMAGE="${IMAGE_BASENAME}:${{ github.sha }}"
+          docker build -t "$IMAGE" .
 
-      # 2. Save to tar
-      - name: Save image to tar
+      # 2) Save image to tar (into runner temp)
+      - name: Save image as tar (stage)
         run: |
-          IMAGE_NAME=sandboxdocker:${{ github.sha }}
-          docker save $IMAGE_NAME -o sandboxdocker.tar
+          STAGE_DIR="${RUNNER_TEMP}/artifacts"
+          mkdir -p "$STAGE_DIR"
+          IMAGE="${IMAGE_BASENAME}:${{ github.sha }}"
+          docker save "$IMAGE" -o "${STAGE_DIR}/sandboxdocker.tar"
 
-      # 3. Generate docker-compose.yml with 모든 설정 포함
-      - name: Generate docker-compose.yml
-        run: |
-          cat > docker-compose.yml <<'EOF'
+          # autorun.sh도 같이 보관 (레포 루트의 파일)
+          if [ -f "autorun.sh" ]; then
+            cp autorun.sh "${STAGE_DIR}/autorun.sh"
+          fi
+
+          # docker-compose.yml 생성(요구 옵션 전부 포함)
+          cat > "${STAGE_DIR}/docker-compose.yml" <<EOF
           version: "3.8"
           services:
-            sandboxdocker:
-              image: sandboxdocker:${GITHUB_SHA}
-              container_name: sandboxdocker
+            ${IMAGE_BASENAME}:
+              image: ${IMAGE_BASENAME}:${{ github.sha }}
+              container_name: ${IMAGE_BASENAME}
               restart: always
-              working_dir: /root/ext_volume
               tty: true
+              working_dir: /root/ext_volume
               environment:
                 INTERNAL_LLM_API_BASE: "http://host.docker.internal:11434/v1"
                 INTERNAL_LLM_API_KEY: "dev-key"
+              # 호스트의 HOME을 컨테이너 ~/ext_volume에 바인딩
               volumes:
-                - ${HOME}:/root/ext_volume
+                - \${HOME}:/root/ext_volume
+                # build 브랜치 작업 디렉토리를 읽기전용으로 마운트(autorun.sh 복사용)
+                - ./:/ext_src:ro
+              # EXPOSE된 포트 동일 번호로 바인딩
               ports:
                 - "37910:37910"
                 - "37911:37911"
@@ -50,8 +62,12 @@ jobs:
                 - "37915:37915"
                 - "38010:38010"
                 - "38011:38011"
+              # 시작 명령(수정 가능): autorun.sh 복사/권한부여 후 실행, 그 다음 유지
               entrypoint: >
                 bash -lc "
+                  if [ -f /ext_src/autorun.sh ]; then
+                    cp /ext_src/autorun.sh /root/autorun.sh;
+                  fi;
                   if [ -f /root/autorun.sh ]; then
                     chmod +x /root/autorun.sh || true;
                     /root/autorun.sh || true;
@@ -60,15 +76,35 @@ jobs:
                 "
           EOF
 
-      # 4. Push tar + compose to build branch
+      # 3) push to build branch (clean tree, keep only last version)
       - name: Push artifacts to build branch
         run: |
-          git config user.name "github-actions[bot]"
+          set -euo pipefail
+          STAGE_DIR="${RUNNER_TEMP}/artifacts"
+
+          git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # build 브랜치로 이동(없으면 생성). 동일 워킹 트리에서 파일 충돌 방지 위해
+          # 먼저 현재 트리의 모든 추적 파일 제거 후, 스테이지에서 복사
           git fetch origin
-          git checkout -B build
-          mv sandboxdocker.tar .
-          mv docker-compose.yml .
-          git add sandboxdocker.tar docker-compose.yml
-          git commit -m "Update build artifacts for ${{ github.sha }}" || echo "No changes to commit"
+          git checkout -B build origin/build || git checkout -B build
+
+          # 워킹트리를 깔끔하게 비움(추적 파일)
+          git rm -rf . >/dev/null 2>&1 || true
+          # 비추적 파일/폴더도 제거(안전하게)
+          find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
+
+          # 아티팩트 복사
+          cp -f "${STAGE_DIR}/sandboxdocker.tar" .
+          cp -f "${STAGE_DIR}/docker-compose.yml" .
+          # autorun.sh가 있으면 함께 커밋(실행 시 컨테이너로 복사됨)
+          if [ -f "${STAGE_DIR}/autorun.sh" ]; then
+            cp -f "${STAGE_DIR}/autorun.sh" .
+          fi
+
+          git add -A
+          git commit -m "Publish sandboxdocker.tar & compose for ${{ github.sha }}" || echo "No changes to commit"
+
+          # '마지막 버전만 남기기' — 강제 푸시로 build 브랜치 포인터를 항상 최신 커밋으로 덮어씀
           git push origin build --force
