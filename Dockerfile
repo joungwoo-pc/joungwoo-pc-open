@@ -139,30 +139,30 @@ ENV INTERNAL_LLM_API_BASE=http://host.docker.internal:11434/v1 \
 # 7) 포트 노출
 EXPOSE 37910 37911 37912 37913 37914 37915 38010 38011
 
-# 8) 레포 루트의 autorun.sh를 컨테이너 /root로 복사 (레포에 파일이 반드시 있어야 빌드 성공)
+# 8) 레포 루트의 autorun.sh를 /root로 복사 (레포에 있어야 빌드 성공)
 COPY autorun.sh /root/autorun.sh
 
-# 9) 엔트리포인트 스크립트 설치: autorun 실행 후 지정된 커맨드(bash -l)로 진입
-RUN bash -lc 'cat > /usr/local/bin/docker-entrypoint.sh << "EOF"\n\
-#!/usr/bin/env bash\n\
-set -euo pipefail\n\
-# autorun 실행 (있으면)\n\
-if [ -f /root/autorun.sh ]; then\n\
-  chmod +x /root/autorun.sh || true\n\
-  /root/autorun.sh || true\n\
-fi\n\
-# 인자가 있으면 그걸 실행, 없으면 bash -l 실행\n\
-if [ \"$#\" -gt 0 ]; then\n\
-  exec \"$@\"\n\
-else\n\
-  exec bash -l\n\
-fi\n\
-EOF\n\
-chmod +x /usr/local/bin/docker-entrypoint.sh'
+# 9) 엔트리포인트 스크립트 생성: autorun 실행 후 bash -l 진입
+RUN cat >/usr/local/bin/docker-entrypoint.sh <<'EOF' \
+&& chmod +x /usr/local/bin/docker-entrypoint.sh
+#!/usr/bin/env bash
+set -euo pipefail
+# autorun 실행(있으면)
+if [ -f /root/autorun.sh ]; then
+  chmod +x /root/autorun.sh || true
+  /root/autorun.sh || true
+fi
+# 인자가 있으면 그걸 실행, 없으면 bash -l 실행
+if [ "$#" -gt 0 ]; then
+  exec "$@"
+else
+  exec bash -l
+fi
+EOF
 
-# 10) 기본 작업 디렉토리: /root/ext_volume (터미널 진입 시 여기서 시작)
-WORKDIR ${EXT_DIR}
+# 10) 기본 작업 디렉토리: /root/ext_volume (컨테이너 터미널 시작 위치)
+WORKDIR /root/ext_volume
 
-# 11) 기본 엔트리포인트/커맨드
+# 11) 엔트리포인트/커맨드
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["bash","-l"]
