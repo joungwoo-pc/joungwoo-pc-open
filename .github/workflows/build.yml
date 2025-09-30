@@ -1,11 +1,18 @@
-name: Build Docker, publish tar & compose to build branch
+# .github/workflows/build.yml
+# NOTE: GitHub은 100MB 초과 파일을 브랜치로 푸시할 수 없습니다.
+# -> 도커 tar는 GitHub Release(tag: build-latest) 자산으로 업로드합니다.
+# -> build 브랜치에는 docker-compose.yml(+ autorun.sh 있으면 포함)만 남겨 항상 최신 상태로 유지합니다.
+
+name: Build Docker, publish image & compose (build branch) + upload tar to Release
 
 on:
   push:
     branches: ["main"]
 
 permissions:
-  contents: write
+  contents: write        # build 브랜치 업데이트
+  packages: write        # GHCR 푸시
+  id-token: write
 
 jobs:
   build-and-publish:
@@ -13,36 +20,58 @@ jobs:
 
     env:
       IMAGE_BASENAME: sandboxdocker
+      REGISTRY: ghcr.io
+      OWNER: ${{ github.repository_owner }}
+      REPO: ${{ github.event.repository.name }}
 
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
 
-      # 1) Build Docker image from repo root Dockerfile
+      - name: Set image tags
+        id: tags
+        run: |
+          OWNER_L=$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]')
+          REPO_L=$(echo "${REPO}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_REF="${REGISTRY}/${OWNER_L}/${REPO_L}:${GITHUB_SHA}"
+          echo "image_ref=${IMAGE_REF}" >> $GITHUB_OUTPUT
+
+      # Build
       - name: Build Docker image
         run: |
-          IMAGE="${IMAGE_BASENAME}:${{ github.sha }}"
-          docker build -t "$IMAGE" .
+          docker build -t "${{ steps.tags.outputs.image_ref }}" .
 
-      # 2) Save image to tar and stage artifacts
+      # Push to GHCR (pull 기반 배포용)
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image to GHCR
+        run: |
+          docker push "${{ steps.tags.outputs.image_ref }}"
+
+      # Save tar (100MB 초과 → 브랜치 푸시 불가, Release 자산으로 업로드)
       - name: Save image to tar (stage)
         run: |
           STAGE_DIR="${RUNNER_TEMP}/artifacts"
           mkdir -p "$STAGE_DIR"
-          IMAGE="${IMAGE_BASENAME}:${{ github.sha }}"
-          docker save "$IMAGE" -o "${STAGE_DIR}/sandboxdocker.tar"
-
-          # If autorun.sh exists in repo root, stage it too
+          docker save "${{ steps.tags.outputs.image_ref }}" -o "${STAGE_DIR}/sandboxdocker.tar"
           if [ -f "autorun.sh" ]; then
             cp autorun.sh "${STAGE_DIR}/autorun.sh"
           fi
 
-          # Generate docker-compose.yml with required runtime config
-          cat > "${STAGE_DIR}/docker-compose.yml" <<'EOF'
+      # Compose 파일 생성 (요구된 실행옵션 모두 포함)
+      - name: Generate docker-compose.yml (stage)
+        run: |
+          STAGE_DIR="${RUNNER_TEMP}/artifacts"
+          cat > "${STAGE_DIR}/docker-compose.yml" <<EOF
           version: "3.8"
           services:
             sandboxdocker:
-              image: sandboxdocker:${GITHUB_SHA}
+              image: ${{ steps.tags.outputs.image_ref }}
               container_name: sandboxdocker
               restart: always
               tty: true
@@ -51,7 +80,7 @@ jobs:
                 INTERNAL_LLM_API_BASE: "http://host.docker.internal:11434/v1"
                 INTERNAL_LLM_API_KEY: "dev-key"
               volumes:
-                - ${HOME}:/root/ext_volume
+                - \${HOME}:/root/ext_volume
                 - ./:/ext_src:ro
               ports:
                 - "37910:37910"
@@ -75,8 +104,8 @@ jobs:
                 "
           EOF
 
-      # 3) Force-publish artifacts to build branch (keep last version only)
-      - name: Push artifacts to build branch
+      # build 브랜치에는 compose(+autorun.sh)만 남김 (항상 최신 1버전 유지)
+      - name: Publish compose (and autorun.sh) to build branch
         run: |
           set -euo pipefail
           STAGE_DIR="${RUNNER_TEMP}/artifacts"
@@ -87,17 +116,26 @@ jobs:
           git fetch origin
           git checkout -B build origin/build || git checkout -B build
 
-          # Clean working tree (tracked + untracked, except .git)
+          # clean working tree
           git rm -rf . >/dev/null 2>&1 || true
           find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
 
-          # Copy staged artifacts
-          cp -f "${STAGE_DIR}/sandboxdocker.tar" .
           cp -f "${STAGE_DIR}/docker-compose.yml" .
-          if [ -f "${STAGE_DIR}/autorun.sh" ]; then
-            cp -f "${STAGE_DIR}/autorun.sh" .
-          fi
+          [ -f "${STAGE_DIR}/autorun.sh" ] && cp -f "${STAGE_DIR}/autorun.sh" .
 
           git add -A
-          git commit -m "Publish sandboxdocker.tar & compose for ${{ github.sha }}" || echo "No changes to commit"
+          git commit -m "Update compose for ${{ github.sha }}" || echo "No changes to commit"
           git push origin build --force
+
+      # Release(tag: build-latest)에 tar 업로드 (브랜치 용량 제한 회피)
+      - name: Upload tar to Release (tag=build-latest)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-latest
+          name: build-latest
+          make_latest: true
+          prerelease: true
+          files: |
+            ${{ runner.temp }}/artifacts/sandboxdocker.tar
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
