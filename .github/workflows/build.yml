@@ -1,7 +1,6 @@
 # .github/workflows/build.yml
-# main 브랜치 변경 시 도커 이미지를 빌드해서
-# sandboxdocker.tar 과 docker-compose.yml 을 Release (tag=build-latest)에 업로드합니다.
-# 실행은:
+# Build with the repo's Dockerfile (root), then upload sandboxdocker.tar and docker-compose.yml to Release (tag=build-latest).
+# Run:
 #   wget https://github.com/joungwoo-pc/joungwoo-pc-open/releases/download/build-latest/sandboxdocker.tar
 #   wget https://github.com/joungwoo-pc/joungwoo-pc-open/releases/download/build-latest/docker-compose.yml
 #   docker load -i sandboxdocker.tar
@@ -13,7 +12,7 @@ on:
   push:
     branches: [ "main" ]
     paths:
-      - "sandboxdocker/**"
+      - "**"
       - ".github/workflows/build.yml"
   workflow_dispatch:
 
@@ -31,40 +30,19 @@ jobs:
       - name: Sanity check
         run: |
           set -euo pipefail
-          test -d sandboxdocker || { echo "sandboxdocker/ not found"; exit 1; }
-          test -f sandboxdocker/docker_requirements.txt || { echo "docker_requirements.txt missing"; exit 1; }
-          test -f sandboxdocker/docker_runs.txt || { echo "docker_runs.txt missing"; exit 1; }
-          ls -la sandboxdocker || true
+          test -f Dockerfile || { echo "Dockerfile not found at repo root"; exit 1; }
+          ls -la || true
 
-      - name: Generate Dockerfile
-        working-directory: sandboxdocker
-        run: |
-          set -euo pipefail
-          cat > Dockerfile <<'EOF'
-          FROM python:3.11-slim
-          ENV DEBIAN_FRONTEND=noninteractive \
-              PIP_DISABLE_PIP_VERSION_CHECK=1 \
-              PYTHONDONTWRITEBYTECODE=1 \
-              PYTHONUNBUFFERED=1
-          ARG DOCKER_HOME=/root
-          ENV DOCKER_HOME=${DOCKER_HOME}
-          ENV PROJECT_DIR=${DOCKER_HOME}/sandboxdocker
-          ENV EXT_VOLUME_DIR=${DOCKER_HOME}/ext_volume
-          RUN mkdir -p "${PROJECT_DIR}" "${EXT_VOLUME_DIR}"
-          COPY . "${PROJECT_DIR}"
-          VOLUME ["${EXT_VOLUME_DIR}"]
-          WORKDIR ${PROJECT_DIR}
-          CMD ["bash"]
-          EOF
-
+      # Build using the repo's Dockerfile (root)
       - name: Build Docker image
-        run: docker build -t sandboxdocker:latest sandboxdocker
+        run: docker build -t sandboxdocker:latest .
 
       - name: Save image as tar
         run: |
           docker save sandboxdocker:latest -o sandboxdocker.tar
           ls -lh sandboxdocker.tar
 
+      # Compose has no entrypoint override; autorun is handled inside the image now.
       - name: Generate docker-compose.yml
         run: |
           cat > docker-compose.yml <<'EOF'
@@ -90,14 +68,6 @@ jobs:
                 - "37915:37915"
                 - "38010:38010"
                 - "38011:38011"
-              entrypoint: >
-                bash -lc "
-                  if [ -f /root/sandboxdocker/autorun.sh ]; then
-                    chmod +x /root/sandboxdocker/autorun.sh || true;
-                    /root/sandboxdocker/autorun.sh || true;
-                  fi;
-                  exec sleep infinity
-                "
           EOF
 
       - name: Upload to Release
