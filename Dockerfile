@@ -118,7 +118,9 @@ RUN pip install --no-cache-dir \
     websockets==15.0.1 \
     wrapt==1.17.3 \
     zipp==3.23.0 \
-    zstandard==0.25.0
+    zstandard==0.25.0 \
+    google-adk \
+    google-a2a
 
 # 4) bash-completion / fzf 설정
 RUN echo "source /usr/share/bash-completion/bash_completion" >> /etc/bash.bashrc && \
