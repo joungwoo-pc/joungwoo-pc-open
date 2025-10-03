@@ -120,7 +120,7 @@ RUN pip install --no-cache-dir \
     zipp==3.23.0 \
     zstandard==0.25.0 \
     google-adk \
-    python-a2a
+    a2a-sdk
 
 # 4) bash-completion / fzf 설정
 RUN echo "source /usr/share/bash-completion/bash_completion" >> /etc/bash.bashrc && \
