@@ -1,8 +1,8 @@
 # .github/workflows/build.yml
 # Build with the repo's Dockerfile (root), then upload sandboxdocker.tar and docker-compose.yml to Release (tag=build-latest).
 # Run:
-#   wget https://github.com/joungwoo-pc/joungwoo-pc-open/releases/download/build-latest/sandboxdocker.tar
-#   wget https://github.com/joungwoo-pc/joungwoo-pc-open/releases/download/build-latest/docker-compose.yml
+#   wget https://github.com/joungwoo-lee/joungwoo-lee-open/releases/download/build-latest/sandboxdocker.tar
+#   wget https://github.com/joungwoo-lee/joungwoo-lee-open/releases/download/build-latest/docker-compose.yml
 #   docker load -i sandboxdocker.tar
 #   docker compose up -d
 
