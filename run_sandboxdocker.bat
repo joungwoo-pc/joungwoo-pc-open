@@ -1,7 +1,7 @@
 # 1) tar와 compose 파일 받기
-curl.exe -f -L -o "sandboxdocker.tar" "https://github.com/joungwoo-pc/joungwoo-pc-open/releases/download/build-latest/sandboxdocker.tar"
+curl.exe -f -L -o "sandboxdocker.tar" "https://github.com/joungwoo-lee/joungwoo-lee-open/releases/download/build-latest/sandboxdocker.tar"
 
-curl.exe -f -L -o "docker-compose.yml" "https://github.com/joungwoo-pc/joungwoo-pc-open/releases/download/build-latest/docker-compose.yml"
+curl.exe -f -L -o "docker-compose.yml" "https://github.com/joungwoo-lee/joungwoo-lee-open/releases/download/build-latest/docker-compose.yml"
 
 # 2) 이미지 로드
 wsl docker load -i sandboxdocker.tar
