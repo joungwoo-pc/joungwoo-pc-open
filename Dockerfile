@@ -119,7 +119,8 @@ RUN pip install --no-cache-dir \
     wrapt==1.17.3 \
     zipp==3.23.0 \
     zstandard==0.25.0 \
-    google-adk
+    google-adk \
+    google-genai
 
 # 4) bash-completion / fzf 설정
 RUN echo "source /usr/share/bash-completion/bash_completion" >> /etc/bash.bashrc && \
