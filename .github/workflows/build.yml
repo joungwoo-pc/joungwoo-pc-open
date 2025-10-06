@@ -76,7 +76,7 @@ jobs:
           tag_name: build-latest
           name: build-latest
           make_latest: true
-          prerelease: true
+          prerelease: false
           files: |
             sandboxdocker.tar
             docker-compose.yml
