@@ -1,6 +1,6 @@
 # 1) tar와 compose 파일 받기
-wget https://github.com/joungwoo-pc/joungwoo-pc-open/releases/download/build-latest/sandboxdocker.tar
-wget https://github.com/joungwoo-pc/joungwoo-pc-open/releases/download/build-latest/docker-compose.yml
+wget https://github.com/joungwoo-lee/joungwoo-lee-open/releases/download/build-latest/sandboxdocker.tar
+wget https://github.com/joungwoo-lee/joungwoo-lee-open/releases/download/build-latest/docker-compose.yml
 
 # 2) 이미지 로드
 docker load -i sandboxdocker.tar

@@ -19,9 +19,10 @@ RUN apt-get update && apt-get upgrade -y && \
     ln -s /usr/bin/pip3 /usr/local/bin/pip && \
     rm -rf /var/lib/apt/lists/*
 
-# 2) 파이썬 최신화
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-
+# 2) 파이썬 업그레이드 및 충돌 방지
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip uninstall -y google || true
+    
 # 3) 파이썬 패키지 설치
 RUN pip install --no-cache-dir \
     langchain langchain-community langchain-openai langgraph \
@@ -119,7 +120,9 @@ RUN pip install --no-cache-dir \
     wrapt==1.17.3 \
     zipp==3.23.0 \
     zstandard==0.25.0 \
-    google-adk
+    google-adk \
+    mcp \
+    google-genai
 
 # 4) bash-completion / fzf 설정
 RUN echo "source /usr/share/bash-completion/bash_completion" >> /etc/bash.bashrc && \

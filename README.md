@@ -13,8 +13,8 @@
 
 ```bash
 # 1) tar와 compose 파일 받기
-wget https://github.com/joungwoo-pc/joungwoo-pc-open/releases/download/build-latest/sandboxdocker.tar
-wget https://github.com/joungwoo-pc/joungwoo-pc-open/releases/download/build-latest/docker-compose.yml
+wget https://github.com/joungwoo-lee/joungwoo-lee-open/releases/download/build-latest/sandboxdocker.tar
+wget https://github.com/joungwoo-lee/joungwoo-lee-open/releases/download/build-latest/docker-compose.yml
 
 # 2) 이미지 로드
 docker load -i sandboxdocker.tar
@@ -31,9 +31,9 @@ Windows PowerShell 사용 시:
 
 ```batch
 # 1) tar와 compose 파일 받기
-curl.exe -f -L -o "sandboxdocker.tar" "https://github.com/joungwoo-pc/joungwoo-pc-open/releases/download/build-latest/sandboxdocker.tar"
+curl.exe -f -L -o "sandboxdocker.tar" "https://github.com/joungwoo-lee/joungwoo-lee-open/releases/download/build-latest/sandboxdocker.tar"
 
-curl.exe -f -L -o "docker-compose.yml" "https://github.com/joungwoo-pc/joungwoo-pc-open/releases/download/build-latest/docker-compose.yml"
+curl.exe -f -L -o "docker-compose.yml" "https://github.com/joungwoo-lee/joungwoo-lee-open/releases/download/build-latest/docker-compose.yml"
 
 # 2) 이미지 로드
 wsl docker load -i sandboxdocker.tar
@@ -94,7 +94,7 @@ Update to latest
 
 
 ```bash
-wget -O sandboxdocker.tar https://github.com/joungwoo-pc/joungwoo-pc-open/releases/download/build-latest/sandboxdocker.tar
+wget -O sandboxdocker.tar https://github.com/joungwoo-lee/joungwoo-lee-open/releases/download/build-latest/sandboxdocker.tar
 docker load -i sandboxdocker.tar
 docker compose pull || true   # 태그가 latest면 생략 가능
 docker compose up -d
